@@ -1,5 +1,11 @@
 APP_NAME := MacWindowCascader
 CONFIGURATION ?= release
+# アドホック署名 (-) だと再ビルドごとに TCC のアクセシビリティ許可が失効するため、
+# 使える署名 ID があればそれで署名する
+CODESIGN_IDENTITY ?= $(shell security find-identity -v -p codesigning 2>/dev/null | awk -F'"' '/Developer ID Application|Apple Development/ {print $$2; exit}')
+ifeq ($(strip $(CODESIGN_IDENTITY)),)
+CODESIGN_IDENTITY := -
+endif
 BUILD_DIR := .build/$(CONFIGURATION)
 APP_DIR := build/$(APP_NAME).app
 INSTALL_DIR ?= $(HOME)/Applications
@@ -18,8 +24,8 @@ app: build
 	cp "$(BUILD_DIR)/$(APP_NAME)" "$(MACOS_DIR)/$(APP_NAME)"
 	cp Resources/Info.plist "$(CONTENTS_DIR)/Info.plist"
 	chmod +x "$(MACOS_DIR)/$(APP_NAME)"
-	codesign --force --sign - "$(APP_DIR)"
-	@echo "Created $(APP_DIR)"
+	codesign --force --sign "$(CODESIGN_IDENTITY)" "$(APP_DIR)"
+	@echo "Created $(APP_DIR) (signed as: $(CODESIGN_IDENTITY))"
 
 run: app
 	open "$(APP_DIR)"

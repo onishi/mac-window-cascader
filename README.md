@@ -19,6 +19,12 @@ make install
 
 `MacWindowCascader` が一覧にない場合は、`build/MacWindowCascader.app` をシステム設定のアクセシビリティ一覧へドラッグして追加してください。すでに ON なのに許可されない場合は、一度 OFF/ON してからアプリを開き直してください。
 
+## 署名について
+
+ビルド時に Keychain の署名 ID(`Developer ID Application` または `Apple Development`)を自動検出して署名します。証明書で署名されたアプリはアクセシビリティ許可が署名の identifier に紐づくため、再ビルドしても許可が維持されます。署名 ID がない場合はアドホック署名になり、再ビルドのたびに再承認が必要です。
+
+アプリのコピーは 1 か所だけにしてください。複数の場所(例: `/Applications` と `~/Applications`)に同じアプリがあると、許可がどのコピーに効いているか分からなくなります。`make install` は `~/Applications` に入れるので、`/Applications` 側に古いコピーがあれば削除してください。
+
 対象アプリをプルダウンから選び、`選択したアプリをカスケード` を押します。通常ウィンドウが 3 つ未満の場合は何もしません。
 
 ## 実装メモ

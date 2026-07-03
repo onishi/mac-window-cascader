@@ -34,11 +34,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem.button?.toolTip = "前面アプリのウィンドウをカスケード配置"
 
         let menu = NSMenu()
-        menu.addItem(NSMenuItem(title: "前面アプリをカスケード", action: #selector(cascadeFrontmostApp), keyEquivalent: "c"))
-        menu.addItem(NSMenuItem(title: "アクセシビリティ権限を確認", action: #selector(checkAccessibility), keyEquivalent: ""))
+        let cascadeItem = NSMenuItem(title: "前面アプリをカスケード", action: #selector(cascadeFrontmostApp), keyEquivalent: "c")
+        cascadeItem.target = self
+        menu.addItem(cascadeItem)
+        let permissionItem = NSMenuItem(title: "アクセシビリティ権限を確認", action: #selector(checkAccessibility), keyEquivalent: "")
+        permissionItem.target = self
+        menu.addItem(permissionItem)
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "終了", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
-        menu.items.forEach { $0.target = self }
         statusItem.menu = menu
 
         showMainWindow()
@@ -54,10 +57,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             } else {
                 result = try cascader.cascadeFrontmostApplication()
             }
-            showMessage(
-                title: "配置しました",
-                message: "\(result.applicationName) の \(result.windowCount) 個のウィンドウをカスケードしました。"
-            )
+            statusLabel?.stringValue = "\(result.applicationName) の \(result.windowCount) 個のウィンドウをカスケードしました"
         } catch {
             showError(error)
         }
@@ -205,7 +205,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func checkAccessibility() {
-        if AccessibilityPermission.requestIfNeeded() {
+        if AccessibilityPermission.requestWithPrompt() {
             showMessage(title: "権限は有効です", message: "このアプリはウィンドウの位置とサイズを変更できます。")
         } else {
             showPermissionMessage(
@@ -256,7 +256,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 }
 
 enum AccessibilityPermission {
-    static func requestIfNeeded() -> Bool {
+    static func isTrusted() -> Bool {
+        AXIsProcessTrusted()
+    }
+
+    static func requestWithPrompt() -> Bool {
         let options = ["AXTrustedCheckOptionPrompt": true] as CFDictionary
         return AXIsProcessTrustedWithOptions(options)
     }
@@ -285,6 +289,7 @@ enum CascadeError: LocalizedError {
     case accessibilityPermissionMissing
     case noFrontmostApplication
     case cannotReadWindows(String)
+    case cannotMoveWindows(String)
     case notEnoughWindows(String, Int)
     case noScreen
 
@@ -296,6 +301,8 @@ enum CascadeError: LocalizedError {
             return "対象にできる前面アプリが見つかりませんでした。"
         case .cannotReadWindows(let appName):
             return "\(appName) のウィンドウ一覧を取得できませんでした。"
+        case .cannotMoveWindows(let appName):
+            return "\(appName) のウィンドウを移動できませんでした。アクセシビリティ権限を確認してください。"
         case .notEnoughWindows(let appName, let count):
             return "\(appName) の通常ウィンドウは \(count) 個です。3つ以上あるアプリで実行してください。"
         case .noScreen:
@@ -304,13 +311,15 @@ enum CascadeError: LocalizedError {
     }
 }
 
+@MainActor
 final class WindowCascader {
     private let cascadeOffset: CGFloat = 34
     private let minimumWindowSize = CGSize(width: 640, height: 420)
     private let margin: CGFloat = 24
 
     func cascadeFrontmostApplication() throws -> CascadeResult {
-        guard AccessibilityPermission.requestIfNeeded() else {
+        guard AccessibilityPermission.isTrusted() else {
+            NSLog("cascade: not trusted")
             throw CascadeError.accessibilityPermissionMissing
         }
 
@@ -322,7 +331,8 @@ final class WindowCascader {
     }
 
     func cascade(application: NSRunningApplication) throws -> CascadeResult {
-        guard AccessibilityPermission.requestIfNeeded() else {
+        guard AccessibilityPermission.isTrusted() else {
+            NSLog("cascade: not trusted")
             throw CascadeError.accessibilityPermissionMissing
         }
 
@@ -333,6 +343,7 @@ final class WindowCascader {
         let appName = application.localizedName ?? application.bundleIdentifier ?? "対象アプリ"
         let applicationElement = AXUIElementCreateApplication(application.processIdentifier)
         let windows = try normalWindows(for: applicationElement, applicationName: appName)
+        NSLog("cascade: app=%@ pid=%d normalWindows=%d", appName, application.processIdentifier, windows.count)
 
         guard windows.count >= 3 else {
             throw CascadeError.notEnoughWindows(appName, windows.count)
@@ -343,12 +354,20 @@ final class WindowCascader {
         }
 
         let frames = cascadeFrames(windowCount: windows.count, visibleFrame: screen.visibleFrame)
-        for (window, frame) in zip(windows, frames) {
-            setWindow(window, frame: frame)
+        var movedCount = 0
+        for (index, (window, frame)) in zip(windows, frames).enumerated() {
+            if setWindow(window, frame: frame, index: index) {
+                movedCount += 1
+            }
         }
+
+        guard movedCount > 0 else {
+            throw CascadeError.cannotMoveWindows(appName)
+        }
+
         bringToFront(application: application, windows: windows)
 
-        return CascadeResult(applicationName: appName, windowCount: windows.count)
+        return CascadeResult(applicationName: appName, windowCount: movedCount)
     }
 
     private func frontmostTargetApplication() -> NSRunningApplication? {
@@ -364,6 +383,7 @@ final class WindowCascader {
         var value: CFTypeRef?
         let result = AXUIElementCopyAttributeValue(application, kAXWindowsAttribute as CFString, &value)
         guard result == .success, let windows = value as? [AXUIElement] else {
+            NSLog("cascade: AXWindows read failed app=%@ error=%d", applicationName, result.rawValue)
             throw CascadeError.cannotReadWindows(applicationName)
         }
 
@@ -438,28 +458,51 @@ final class WindowCascader {
         }
     }
 
-    private func setWindow(_ window: AXUIElement, frame: CGRect) {
-        var size = frame.size
-        var position = frame.origin
+    private func setWindow(_ window: AXUIElement, frame: CGRect, index: Int) -> Bool {
+        // サイズ変更で位置がずれるアプリや、一度の指定では反映されないアプリが
+        // あるため、位置とサイズを交互に 2 回適用してそろえる
+        let positionResult = setPosition(window, frame.origin)
+        let sizeResult = setSize(window, frame.size)
+        _ = setPosition(window, frame.origin)
+        _ = setSize(window, frame.size)
 
-        if let sizeValue = AXValueCreate(.cgSize, &size) {
-            AXUIElementSetAttributeValue(window, kAXSizeAttribute as CFString, sizeValue)
+        if positionResult != .success || sizeResult != .success {
+            NSLog(
+                "cascade: window[%d] set failed position=%d size=%d",
+                index, positionResult.rawValue, sizeResult.rawValue
+            )
         }
+        return positionResult == .success && sizeResult == .success
+    }
 
-        if let positionValue = AXValueCreate(.cgPoint, &position) {
-            AXUIElementSetAttributeValue(window, kAXPositionAttribute as CFString, positionValue)
+    private func setPosition(_ window: AXUIElement, _ origin: CGPoint) -> AXError {
+        var position = origin
+        guard let positionValue = AXValueCreate(.cgPoint, &position) else {
+            return .failure
         }
+        return AXUIElementSetAttributeValue(window, kAXPositionAttribute as CFString, positionValue)
+    }
+
+    private func setSize(_ window: AXUIElement, _ targetSize: CGSize) -> AXError {
+        var size = targetSize
+        guard let sizeValue = AXValueCreate(.cgSize, &size) else {
+            return .failure
+        }
+        return AXUIElementSetAttributeValue(window, kAXSizeAttribute as CFString, sizeValue)
     }
 
     private func bringToFront(application: NSRunningApplication, windows: [AXUIElement]) {
-        application.activate(options: [.activateAllWindows, .activateIgnoringOtherApps])
-
         for window in windows.reversed() {
             AXUIElementPerformAction(window, kAXRaiseAction as CFString)
         }
 
-        if let firstWindow = windows.first {
-            AXUIElementPerformAction(firstWindow, kAXRaiseAction as CFString)
+        if #available(macOS 14.0, *) {
+            // macOS 14 以降はアクティブなアプリから他アプリを activate できないため、
+            // 先にアクティブ状態を譲る必要がある
+            NSApp.yieldActivation(to: application)
+            application.activate(options: .activateAllWindows)
+        } else {
+            application.activate(options: [.activateAllWindows, .activateIgnoringOtherApps])
         }
     }
 }
