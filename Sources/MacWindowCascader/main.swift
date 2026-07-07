@@ -326,9 +326,6 @@ enum CascadeError: LocalizedError {
 
 @MainActor
 final class WindowCascader {
-    private let cascadeOffset: CGFloat = 34
-    private let minimumWindowSize = CGSize(width: 640, height: 420)
-    private let margin: CGFloat = 24
 
     func cascadeFrontmostApplication() throws -> CascadeResult {
         guard AccessibilityPermission.isTrusted() else {
@@ -457,17 +454,25 @@ final class WindowCascader {
     }
 
     private func cascadeFrames(windowCount: Int, visibleFrame: CGRect) -> [CGRect] {
-        let totalOffset = cascadeOffset * CGFloat(max(windowCount - 1, 0))
-        let availableWidth = visibleFrame.width - margin * 2 - totalOffset
-        let availableHeight = visibleFrame.height - margin * 2 - totalOffset
-        let width = max(minimumWindowSize.width, availableWidth)
-        let height = max(minimumWindowSize.height, availableHeight)
-        let baseX = visibleFrame.minX + margin
-        let baseY = visibleFrame.minY + margin
+        // ウィンドウサイズは画面の縦横それぞれ半分に固定し、
+        // 左下(1枚目)から右上(最後の1枚)へ均等なステップで階段状に並べる
+        let width = visibleFrame.width / 2
+        let height = visibleFrame.height / 2
+        let horizontalRoom = max(visibleFrame.width - width, 0)
+        let verticalRoom = max(visibleFrame.height - height, 0)
+        let steps = CGFloat(max(windowCount - 1, 1))
+        let stepX = horizontalRoom / steps
+        let stepY = verticalRoom / steps
 
         return (0..<windowCount).map { index in
-            let offset = cascadeOffset * CGFloat(index)
-            return CGRect(x: baseX + offset, y: baseY + offset, width: width, height: height)
+            let offsetX = stepX * CGFloat(index)
+            let offsetY = stepY * CGFloat(index)
+            return CGRect(
+                x: visibleFrame.minX + offsetX,
+                y: visibleFrame.minY + offsetY,
+                width: width,
+                height: height
+            )
         }
     }
 
