@@ -1,12 +1,37 @@
 import AppKit
 import ApplicationServices
 
+enum CascadeSettings {
+    private static let minWidthKey = "minWindowWidth"
+    private static let minHeightKey = "minWindowHeight"
+    static let defaultMinWidth: CGFloat = 1000
+    static let defaultMinHeight: CGFloat = 750
+
+    static var minWidth: CGFloat {
+        get {
+            let value = UserDefaults.standard.double(forKey: minWidthKey)
+            return value > 0 ? CGFloat(value) : defaultMinWidth
+        }
+        set { UserDefaults.standard.set(Double(newValue), forKey: minWidthKey) }
+    }
+
+    static var minHeight: CGFloat {
+        get {
+            let value = UserDefaults.standard.double(forKey: minHeightKey)
+            return value > 0 ? CGFloat(value) : defaultMinHeight
+        }
+        set { UserDefaults.standard.set(Double(newValue), forKey: minHeightKey) }
+    }
+}
+
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
     private var statusItem: NSStatusItem!
     private var window: NSWindow?
     private var appPopup: NSPopUpButton?
     private var statusLabel: NSTextField?
+    private var minWidthField: NSTextField?
+    private var minHeightField: NSTextField?
     private var lastTargetApplication: NSRunningApplication?
     private let cascader = WindowCascader()
     private let ignoredBundleIdentifiers = Set([
@@ -38,6 +63,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let cascadeItem = NSMenuItem(title: "前面アプリをカスケード", action: #selector(cascadeFrontmostApp), keyEquivalent: "c")
         cascadeItem.target = self
         menu.addItem(cascadeItem)
+        let cascadeAllItem = NSMenuItem(title: "全てのアプリをカスケード", action: #selector(cascadeAllApps), keyEquivalent: "")
+        cascadeAllItem.target = self
+        menu.addItem(cascadeAllItem)
         let permissionItem = NSMenuItem(title: "アクセシビリティ権限を確認", action: #selector(checkAccessibility), keyEquivalent: "")
         permissionItem.target = self
         menu.addItem(permissionItem)
@@ -62,6 +90,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } catch {
             showError(error)
         }
+    }
+
+    @objc private func cascadeAllApps() {
+        let applications = selectableApplications()
+        var succeeded: [CascadeResult] = []
+        var failures: [String] = []
+        var groupIndex = 0
+
+        for application in applications {
+            do {
+                succeeded.append(try cascader.cascade(application: application, groupIndex: groupIndex))
+                groupIndex += 1
+            } catch CascadeError.notEnoughWindows {
+                continue
+            } catch CascadeError.accessibilityPermissionMissing {
+                showError(CascadeError.accessibilityPermissionMissing)
+                return
+            } catch {
+                failures.append(application.localizedName ?? application.bundleIdentifier ?? "Unknown")
+            }
+        }
+
+        if succeeded.isEmpty && failures.isEmpty {
+            statusLabel?.stringValue = "ウィンドウが3つ以上のアプリがありませんでした"
+            return
+        }
+
+        var message = "\(succeeded.count) 個のアプリをカスケードしました"
+        if !failures.isEmpty {
+            message += "(失敗: \(failures.joined(separator: ", ")))"
+        }
+        statusLabel?.stringValue = message
     }
 
     @objc private func activeApplicationDidChange(_ notification: Notification) {
@@ -108,42 +168,72 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func buildMainWindow() {
-        let contentView = NSView(frame: NSRect(x: 0, y: 0, width: 460, height: 232))
+        let contentView = NSView(frame: NSRect(x: 0, y: 0, width: 620, height: 268))
 
         let title = NSTextField(labelWithString: "MacWindowCascader")
         title.font = .boldSystemFont(ofSize: 20)
-        title.frame = NSRect(x: 24, y: 180, width: 400, height: 26)
+        title.frame = NSRect(x: 24, y: 216, width: 400, height: 26)
 
         let description = NSTextField(wrappingLabelWithString: "対象アプリを選び、通常ウィンドウが 3 つ以上ある状態で実行してください。")
-        description.frame = NSRect(x: 24, y: 146, width: 412, height: 24)
+        description.frame = NSRect(x: 24, y: 182, width: 572, height: 24)
 
-        let popup = NSPopUpButton(frame: NSRect(x: 24, y: 104, width: 300, height: 28), pullsDown: false)
+        let popup = NSPopUpButton(frame: NSRect(x: 24, y: 140, width: 300, height: 28), pullsDown: false)
         appPopup = popup
 
         let reloadButton = NSButton(title: "更新", target: self, action: #selector(refreshApplicationsFromButton))
         reloadButton.bezelStyle = .rounded
-        reloadButton.frame = NSRect(x: 336, y: 102, width: 72, height: 32)
+        reloadButton.frame = NSRect(x: 336, y: 138, width: 72, height: 32)
+
+        let minSizeLabel = NSTextField(labelWithString: "最小サイズ:")
+        minSizeLabel.frame = NSRect(x: 24, y: 104, width: 80, height: 20)
+
+        let minWidthField = NSTextField(frame: NSRect(x: 108, y: 100, width: 60, height: 24))
+        minWidthField.stringValue = String(format: "%.0f", CascadeSettings.minWidth)
+        minWidthField.delegate = self
+        self.minWidthField = minWidthField
+
+        let timesLabel = NSTextField(labelWithString: "×")
+        timesLabel.frame = NSRect(x: 172, y: 104, width: 16, height: 20)
+
+        let minHeightField = NSTextField(frame: NSRect(x: 192, y: 100, width: 60, height: 24))
+        minHeightField.stringValue = String(format: "%.0f", CascadeSettings.minHeight)
+        minHeightField.delegate = self
+        self.minHeightField = minHeightField
+
+        let pxLabel = NSTextField(labelWithString: "px")
+        pxLabel.textColor = .secondaryLabelColor
+        pxLabel.frame = NSRect(x: 256, y: 104, width: 24, height: 20)
 
         let statusLabel = NSTextField(labelWithString: "")
         statusLabel.textColor = .secondaryLabelColor
-        statusLabel.frame = NSRect(x: 24, y: 72, width: 412, height: 20)
+        statusLabel.frame = NSRect(x: 24, y: 72, width: 572, height: 20)
         self.statusLabel = statusLabel
 
         let button = NSButton(title: "選択したアプリをカスケード", target: self, action: #selector(cascadeFrontmostApp))
         button.bezelStyle = .rounded
         button.keyEquivalent = "\r"
-        button.frame = NSRect(x: 24, y: 28, width: 180, height: 32)
+        button.frame = NSRect(x: 24, y: 28, width: 200, height: 32)
+
+        let cascadeAllButton = NSButton(title: "全てのアプリをカスケード", target: self, action: #selector(cascadeAllApps))
+        cascadeAllButton.bezelStyle = .rounded
+        cascadeAllButton.frame = NSRect(x: 232, y: 28, width: 200, height: 32)
 
         let permissionButton = NSButton(title: "権限を確認", target: self, action: #selector(checkAccessibility))
         permissionButton.bezelStyle = .rounded
-        permissionButton.frame = NSRect(x: 216, y: 28, width: 120, height: 32)
+        permissionButton.frame = NSRect(x: 440, y: 28, width: 120, height: 32)
 
         contentView.addSubview(title)
         contentView.addSubview(description)
         contentView.addSubview(popup)
         contentView.addSubview(reloadButton)
+        contentView.addSubview(minSizeLabel)
+        contentView.addSubview(minWidthField)
+        contentView.addSubview(timesLabel)
+        contentView.addSubview(minHeightField)
+        contentView.addSubview(pxLabel)
         contentView.addSubview(statusLabel)
         contentView.addSubview(button)
+        contentView.addSubview(cascadeAllButton)
         contentView.addSubview(permissionButton)
 
         let newWindow = NSWindow(
@@ -162,6 +252,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func refreshApplicationsFromButton() {
         refreshApplicationList(selecting: selectedApplication() ?? lastTargetApplication)
+    }
+
+    func controlTextDidEndEditing(_ obj: Notification) {
+        guard let textField = obj.object as? NSTextField else {
+            return
+        }
+
+        if textField === minWidthField {
+            if let value = Double(textField.stringValue), value > 0 {
+                CascadeSettings.minWidth = CGFloat(value)
+            }
+            textField.stringValue = String(format: "%.0f", CascadeSettings.minWidth)
+        } else if textField === minHeightField {
+            if let value = Double(textField.stringValue), value > 0 {
+                CascadeSettings.minHeight = CGFloat(value)
+            }
+            textField.stringValue = String(format: "%.0f", CascadeSettings.minHeight)
+        }
     }
 
     private func refreshApplicationList(selecting applicationToSelect: NSRunningApplication?) {
@@ -326,6 +434,10 @@ enum CascadeError: LocalizedError {
 
 @MainActor
 final class WindowCascader {
+    // 複数アプリを続けてカスケードするとき、アプリごとにこの分だけ階段配置全体をずらす
+    private let applicationGroupOffset: CGFloat = 120
+    private let maxHorizontalStep: CGFloat = 120
+    private let maxVerticalStep: CGFloat = 30
 
     func cascadeFrontmostApplication() throws -> CascadeResult {
         guard AccessibilityPermission.isTrusted() else {
@@ -337,19 +449,19 @@ final class WindowCascader {
             throw CascadeError.noFrontmostApplication
         }
 
-        return try cascadeTrusted(application: application)
+        return try cascadeTrusted(application: application, groupIndex: 0)
     }
 
-    func cascade(application: NSRunningApplication) throws -> CascadeResult {
+    func cascade(application: NSRunningApplication, groupIndex: Int = 0) throws -> CascadeResult {
         guard AccessibilityPermission.isTrusted() else {
             NSLog("cascade: not trusted")
             throw CascadeError.accessibilityPermissionMissing
         }
 
-        return try cascadeTrusted(application: application)
+        return try cascadeTrusted(application: application, groupIndex: groupIndex)
     }
 
-    private func cascadeTrusted(application: NSRunningApplication) throws -> CascadeResult {
+    private func cascadeTrusted(application: NSRunningApplication, groupIndex: Int) throws -> CascadeResult {
         let appName = application.localizedName ?? application.bundleIdentifier ?? "対象アプリ"
         let applicationElement = AXUIElementCreateApplication(application.processIdentifier)
         let windows = try normalWindows(for: applicationElement, applicationName: appName)
@@ -363,10 +475,12 @@ final class WindowCascader {
             throw CascadeError.noScreen
         }
 
-        let frames = cascadeFrames(windowCount: windows.count, visibleFrame: screen.visibleFrame)
+        let groupOffset = applicationGroupOffset * CGFloat(groupIndex)
+        let frames = cascadeFrames(windowCount: windows.count, visibleFrame: screen.visibleFrame, groupOffset: groupOffset)
         var movedCount = 0
         for (index, (window, frame)) in zip(windows, frames).enumerated() {
-            if setWindow(window, frame: frame, index: index) {
+            let axFrame = convertToAccessibilityCoordinates(frame)
+            if setWindow(window, frame: axFrame, index: index) {
                 movedCount += 1
             }
         }
@@ -427,6 +541,20 @@ final class WindowCascader {
         return value as? Bool ?? defaultValue
     }
 
+    private func convertToAccessibilityCoordinates(_ frame: CGRect) -> CGRect {
+        // AXPosition/AXSize は主画面左上を原点として Y が下向きに増える座標系を使うため、
+        // NSScreen の左下原点・Y上向きの座標系から変換する
+        guard let primaryScreenHeight = NSScreen.screens.first?.frame.height else {
+            return frame
+        }
+        return CGRect(
+            x: frame.origin.x,
+            y: primaryScreenHeight - frame.origin.y - frame.height,
+            width: frame.width,
+            height: frame.height
+        )
+    }
+
     private func targetScreen(for firstWindow: AXUIElement?) -> NSScreen? {
         guard let firstWindow, let position = pointAttribute(firstWindow, kAXPositionAttribute) else {
             return NSScreen.main ?? NSScreen.screens.first
@@ -453,23 +581,32 @@ final class WindowCascader {
         return point
     }
 
-    private func cascadeFrames(windowCount: Int, visibleFrame: CGRect) -> [CGRect] {
-        // ウィンドウサイズは画面の縦横それぞれ半分に固定し、
-        // 左下(1枚目)から右上(最後の1枚)へ均等なステップで階段状に並べる
-        let width = visibleFrame.width / 2
-        let height = visibleFrame.height / 2
+    private func cascadeFrames(windowCount: Int, visibleFrame: CGRect, groupOffset: CGFloat) -> [CGRect] {
+        // ウィンドウサイズは設定された最小サイズをそのまま使う(画面の半分制限は無視する)。
+        // 左下(1枚目)から右上(最後の1枚)へ均等なステップで階段状に並べる。
+        // groupOffset は複数アプリを続けてカスケードする際の、アプリ単位の追加ずらし量(右方向のみ)。
+        let width = CascadeSettings.minWidth
+        let height = CascadeSettings.minHeight
         let horizontalRoom = max(visibleFrame.width - width, 0)
         let verticalRoom = max(visibleFrame.height - height, 0)
         let steps = CGFloat(max(windowCount - 1, 1))
-        let stepX = horizontalRoom / steps
-        let stepY = verticalRoom / steps
+        // 横方向・縦方向とも余裕があっても 1 ステップの最大幅を超えないようにし、
+        // 使い切らなかった分は中央に寄せる
+        let stepX = min(horizontalRoom / steps, maxHorizontalStep)
+        let stepY = min(verticalRoom / steps, maxVerticalStep)
+        let usedHorizontalSpan = stepX * steps + width
+        let usedVerticalSpan = stepY * steps + height
+        let horizontalPadding = max(visibleFrame.width - usedHorizontalSpan, 0) / 2
+        let verticalPadding = max(visibleFrame.height - usedVerticalSpan, 0) / 2
+        let baseX = visibleFrame.minX + horizontalPadding
+        let baseY = visibleFrame.minY + verticalPadding
 
         return (0..<windowCount).map { index in
-            let offsetX = stepX * CGFloat(index)
+            let offsetX = stepX * CGFloat(index) + groupOffset
             let offsetY = stepY * CGFloat(index)
             return CGRect(
-                x: visibleFrame.minX + offsetX,
-                y: visibleFrame.minY + offsetY,
+                x: baseX + offsetX,
+                y: baseY + offsetY,
                 width: width,
                 height: height
             )
