@@ -1,37 +1,12 @@
 import AppKit
 import ApplicationServices
 
-enum CascadeSettings {
-    private static let minWidthKey = "minWindowWidth"
-    private static let minHeightKey = "minWindowHeight"
-    static let defaultMinWidth: CGFloat = 1000
-    static let defaultMinHeight: CGFloat = 750
-
-    static var minWidth: CGFloat {
-        get {
-            let value = UserDefaults.standard.double(forKey: minWidthKey)
-            return value > 0 ? CGFloat(value) : defaultMinWidth
-        }
-        set { UserDefaults.standard.set(Double(newValue), forKey: minWidthKey) }
-    }
-
-    static var minHeight: CGFloat {
-        get {
-            let value = UserDefaults.standard.double(forKey: minHeightKey)
-            return value > 0 ? CGFloat(value) : defaultMinHeight
-        }
-        set { UserDefaults.standard.set(Double(newValue), forKey: minHeightKey) }
-    }
-}
-
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private var window: NSWindow?
     private var appPopup: NSPopUpButton?
     private var statusLabel: NSTextField?
-    private var minWidthField: NSTextField?
-    private var minHeightField: NSTextField?
     private var lastTargetApplication: NSRunningApplication?
     private let cascader = WindowCascader()
     private let ignoredBundleIdentifiers = Set([
@@ -168,41 +143,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
     }
 
     private func buildMainWindow() {
-        let contentView = NSView(frame: NSRect(x: 0, y: 0, width: 620, height: 268))
+        let contentView = NSView(frame: NSRect(x: 0, y: 0, width: 620, height: 232))
 
         let title = NSTextField(labelWithString: "MacWindowCascader")
         title.font = .boldSystemFont(ofSize: 20)
-        title.frame = NSRect(x: 24, y: 216, width: 400, height: 26)
+        title.frame = NSRect(x: 24, y: 180, width: 400, height: 26)
 
         let description = NSTextField(wrappingLabelWithString: "対象アプリを選び、通常ウィンドウが 3 つ以上ある状態で実行してください。")
-        description.frame = NSRect(x: 24, y: 182, width: 572, height: 24)
+        description.frame = NSRect(x: 24, y: 146, width: 572, height: 24)
 
-        let popup = NSPopUpButton(frame: NSRect(x: 24, y: 140, width: 300, height: 28), pullsDown: false)
+        let popup = NSPopUpButton(frame: NSRect(x: 24, y: 104, width: 300, height: 28), pullsDown: false)
         appPopup = popup
 
         let reloadButton = NSButton(title: "更新", target: self, action: #selector(refreshApplicationsFromButton))
         reloadButton.bezelStyle = .rounded
-        reloadButton.frame = NSRect(x: 336, y: 138, width: 72, height: 32)
-
-        let minSizeLabel = NSTextField(labelWithString: "最小サイズ:")
-        minSizeLabel.frame = NSRect(x: 24, y: 104, width: 80, height: 20)
-
-        let minWidthField = NSTextField(frame: NSRect(x: 108, y: 100, width: 60, height: 24))
-        minWidthField.stringValue = String(format: "%.0f", CascadeSettings.minWidth)
-        minWidthField.delegate = self
-        self.minWidthField = minWidthField
-
-        let timesLabel = NSTextField(labelWithString: "×")
-        timesLabel.frame = NSRect(x: 172, y: 104, width: 16, height: 20)
-
-        let minHeightField = NSTextField(frame: NSRect(x: 192, y: 100, width: 60, height: 24))
-        minHeightField.stringValue = String(format: "%.0f", CascadeSettings.minHeight)
-        minHeightField.delegate = self
-        self.minHeightField = minHeightField
-
-        let pxLabel = NSTextField(labelWithString: "px")
-        pxLabel.textColor = .secondaryLabelColor
-        pxLabel.frame = NSRect(x: 256, y: 104, width: 24, height: 20)
+        reloadButton.frame = NSRect(x: 336, y: 102, width: 72, height: 32)
 
         let statusLabel = NSTextField(labelWithString: "")
         statusLabel.textColor = .secondaryLabelColor
@@ -226,11 +181,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
         contentView.addSubview(description)
         contentView.addSubview(popup)
         contentView.addSubview(reloadButton)
-        contentView.addSubview(minSizeLabel)
-        contentView.addSubview(minWidthField)
-        contentView.addSubview(timesLabel)
-        contentView.addSubview(minHeightField)
-        contentView.addSubview(pxLabel)
         contentView.addSubview(statusLabel)
         contentView.addSubview(button)
         contentView.addSubview(cascadeAllButton)
@@ -252,24 +202,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
 
     @objc private func refreshApplicationsFromButton() {
         refreshApplicationList(selecting: selectedApplication() ?? lastTargetApplication)
-    }
-
-    func controlTextDidEndEditing(_ obj: Notification) {
-        guard let textField = obj.object as? NSTextField else {
-            return
-        }
-
-        if textField === minWidthField {
-            if let value = Double(textField.stringValue), value > 0 {
-                CascadeSettings.minWidth = CGFloat(value)
-            }
-            textField.stringValue = String(format: "%.0f", CascadeSettings.minWidth)
-        } else if textField === minHeightField {
-            if let value = Double(textField.stringValue), value > 0 {
-                CascadeSettings.minHeight = CGFloat(value)
-            }
-            textField.stringValue = String(format: "%.0f", CascadeSettings.minHeight)
-        }
     }
 
     private func refreshApplicationList(selecting applicationToSelect: NSRunningApplication?) {
@@ -438,6 +370,9 @@ final class WindowCascader {
     private let applicationGroupOffset: CGFloat = 120
     private let maxHorizontalStep: CGFloat = 120
     private let maxVerticalStep: CGFloat = 30
+    private let windowAspectRatio: CGFloat = 4.0 / 3.0
+    private let minWidth: CGFloat = 1000
+    private let minHeight: CGFloat = 750
 
     func cascadeFrontmostApplication() throws -> CascadeResult {
         guard AccessibilityPermission.isTrusted() else {
@@ -582,11 +517,23 @@ final class WindowCascader {
     }
 
     private func cascadeFrames(windowCount: Int, visibleFrame: CGRect, groupOffset: CGFloat) -> [CGRect] {
-        // ウィンドウサイズは設定された最小サイズをそのまま使う(画面の半分制限は無視する)。
+        // ウィンドウは 4:3 の縦横比を保ちつつ、画面の縦横それぞれ半分を超えない最大サイズにし、
         // 左下(1枚目)から右上(最後の1枚)へ均等なステップで階段状に並べる。
         // groupOffset は複数アプリを続けてカスケードする際の、アプリ単位の追加ずらし量(右方向のみ)。
-        let width = CascadeSettings.minWidth
-        let height = CascadeSettings.minHeight
+        let maxWidth = visibleFrame.width / 2
+        let maxHeight = visibleFrame.height / 2
+        var width: CGFloat
+        var height: CGFloat
+        if maxHeight * windowAspectRatio <= maxWidth {
+            width = maxHeight * windowAspectRatio
+            height = maxHeight
+        } else {
+            width = maxWidth
+            height = maxWidth / windowAspectRatio
+        }
+        // 画面が小さく計算結果が最小サイズを下回る場合は、最小サイズ(1000x750)を優先する
+        width = max(width, minWidth)
+        height = max(height, minHeight)
         let horizontalRoom = max(visibleFrame.width - width, 0)
         let verticalRoom = max(visibleFrame.height - height, 0)
         let steps = CGFloat(max(windowCount - 1, 1))
