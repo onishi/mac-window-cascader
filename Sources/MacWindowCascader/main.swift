@@ -143,14 +143,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func buildMainWindow() {
-        let contentView = NSView(frame: NSRect(x: 0, y: 0, width: 620, height: 232))
+        let contentView = NSView(frame: NSRect(x: 0, y: 0, width: 620, height: 198))
 
         let title = NSTextField(labelWithString: "MacWindowCascader")
         title.font = .boldSystemFont(ofSize: 20)
-        title.frame = NSRect(x: 24, y: 180, width: 400, height: 26)
-
-        let description = NSTextField(wrappingLabelWithString: "対象アプリを選び、通常ウィンドウが 3 つ以上ある状態で実行してください。")
-        description.frame = NSRect(x: 24, y: 146, width: 572, height: 24)
+        title.frame = NSRect(x: 24, y: 146, width: 400, height: 26)
 
         let popup = NSPopUpButton(frame: NSRect(x: 24, y: 104, width: 300, height: 28), pullsDown: false)
         appPopup = popup
@@ -178,7 +175,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         permissionButton.frame = NSRect(x: 440, y: 28, width: 120, height: 32)
 
         contentView.addSubview(title)
-        contentView.addSubview(description)
         contentView.addSubview(popup)
         contentView.addSubview(reloadButton)
         contentView.addSubview(statusLabel)
@@ -226,9 +222,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             appPopup.selectItem(at: 0)
         }
 
-        if let selectedApplication = selectedApplication() {
-            statusLabel?.stringValue = "対象: \(selectedApplication.localizedName ?? "Unknown")"
-        } else {
+        if selectedApplication() == nil {
             statusLabel?.stringValue = "対象アプリがありません"
         }
     }
@@ -245,6 +239,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func selectableApplications() -> [NSRunningApplication] {
         NSWorkspace.shared.runningApplications
             .filter(isSelectableApplication)
+            .filter { cascader.normalWindowCount(for: $0) >= 3 }
             .sorted {
                 ($0.localizedName ?? $0.bundleIdentifier ?? "") < ($1.localizedName ?? $1.bundleIdentifier ?? "")
             }
@@ -394,6 +389,14 @@ final class WindowCascader {
         }
 
         return try cascadeTrusted(application: application, groupIndex: groupIndex)
+    }
+
+    func normalWindowCount(for application: NSRunningApplication) -> Int {
+        guard AccessibilityPermission.isTrusted() else {
+            return 0
+        }
+        let applicationElement = AXUIElementCreateApplication(application.processIdentifier)
+        return (try? normalWindows(for: applicationElement, applicationName: "")).map { $0.count } ?? 0
     }
 
     private func cascadeTrusted(application: NSRunningApplication, groupIndex: Int) throws -> CascadeResult {
